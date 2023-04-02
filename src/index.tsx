@@ -3,8 +3,7 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import App from "./App";
 import { kanbanCss } from "./kanban";
-import * as chrono from "chrono-node";
-import { getYYYMMDD } from "logseq-dateutils";
+import { BlockEntity } from "@logseq/libs/dist/LSPlugin.user";
 
 type Task = {
   content: string;
@@ -26,7 +25,7 @@ const main = async () => {
   // Set path in settings for adding images to kanban board
   const currGraph = await logseq.App.getCurrentGraph();
   logseq.updateSettings({
-    pathToLogseq: `${currGraph.path}/assets`,
+    pathToLogseq: `${currGraph!.path}/assets`,
   });
 
   // Generate unique identifier
@@ -59,10 +58,11 @@ const main = async () => {
     // Get children data to draw kanban board
     const block = await logseq.Editor.getBlock(uuid, { includeChildren: true });
     // Data from child block comes here
-    let dataBlock = block.children[0]["children"];
+    let dataBlock = block!.children![0]["children"];
 
     // Get width data from the block to allow flexible widths
-    let [parent, width, wrapperWidth] = block.children[0]["content"].split(" ");
+    let [parent, width, wrapperWidth] =
+      block!.children![0]["content"].split(" ");
 
     // Provide style for kanban board
     if (width === undefined && wrapperWidth === undefined) {
@@ -83,38 +83,27 @@ const main = async () => {
     const userConfigs = await logseq.App.getUserConfigs();
     const { preferredWorkflow } = userConfigs;
 
-    // DOING Do this and that\n:LOGBOOK:\nCLOCK: [2022-01-24 Mon 12:00:03]--[2022-01-24 Mon 12:00:05] =>  00:00:02\nCLOCK: [2022-01-24 Mon 12:00:06]\n:END:
-
     const returnPayload = (content: string) => {
-      let payload = content.replace(/:LOGBOOK:|collapsed:: true/gi, "");
+      let payload = content.replace(":LOGBOOK:", "").replace(":END:", "");
 
-      if (payload.includes("CLOCK: [")) {
-        payload = payload.substring(0, payload.indexOf("CLOCK: ["));
+      if (content.includes("\n")) {
+        payload = payload.substring(0, content.indexOf("\n"));
       }
-
-      if (payload.includes("DEADLINE: <")) {
-        payload = payload.substring(0, payload.indexOf("DEADLINE: <"));
-      }
-      if (content.indexOf(`\nid:: `) === -1) {
-        return payload;
-      } else {
-        return payload.substring(0, content.indexOf(`\nid:: `));
-      }
+      return payload;
     };
 
     if (parent.toLowerCase() === "tasks") {
       let dataContent = dataBlock[0].content;
-      let inputs: any;
 
       // Check if query
       if (
-        dataContent.startsWith("#+BEGIN_QUERY") &&
-        dataContent.endsWith("#+END_QUERY")
+        dataContent.includes("#+BEGIN_QUERY") &&
+        dataContent.includes("#+END_QUERY")
       ) {
         logseq.provideModel({
           async render() {
-            const tempBlock = await logseq.Editor.insertBlock(block.uuid, "");
-            await logseq.Editor.removeBlock(tempBlock.uuid);
+            const tempBlock = await logseq.Editor.insertBlock(block!.uuid, "");
+            await logseq.Editor.removeBlock(tempBlock!.uuid);
           },
         });
 
@@ -123,56 +112,16 @@ const main = async () => {
           <div class="btnDiv"><button data-on-click="render" class="updateKanbanBtn">Update Kanban</button></div></div>`;
         };
 
-        // Remove unnecessary syntax
-        dataContent = dataContent
-          .replace("#+BEGIN_QUERY", "")
-          .replace("#+END_QUERY", "");
+        const regexp = /\[:find((.|\n)*)\]/;
+        const matched = regexp.exec(dataContent);
 
-        if (dataContent.includes(":inputs [")) {
-          inputs = dataContent.slice(dataContent.indexOf(":inputs ["));
-          let inputsArr = inputs
-            .substring(0, inputs.indexOf("]"))
-            .replace(":inputs [", "")
-            .replaceAll(":", "")
-            .split(" ");
-
-          inputsArr = inputsArr.map((i) =>
-            i === "today" || i === "yesterday"
-              ? getYYYMMDD(chrono.parse(i)[0].start.date())
-              : getYYYMMDD(
-                  chrono
-                    .parse(i.replace("d", "days").replace("-", " "))[0]
-                    .start.date()
-                )
-          );
-
-          inputs = inputsArr;
-        }
-
-        // Get text after :query
-        dataContent = dataContent.slice(dataContent.indexOf("[:find"));
-
-        // Pass query through API
-        let datascriptQuery: any[];
-        if (!inputs) {
-          datascriptQuery = await logseq.DB.datascriptQuery(dataContent);
-        } else if (!inputs[1]) {
-          datascriptQuery = await logseq.DB.datascriptQuery(
-            dataContent,
-            //@ts-ignore
-            inputs[0],
-            inputs[0]
-          );
-        } else {
-          datascriptQuery = await logseq.DB.datascriptQuery(
-            dataContent,
-            //@ts-ignore
-            inputs[0],
-            inputs[1]
-          );
-        }
+        let datascriptQuery = await logseq.DB.datascriptQuery(matched[0]);
         dataBlock = datascriptQuery.map((i) => i[0]);
       }
+
+      dataBlock = dataBlock.sort((a: BlockEntity, b: BlockEntity) =>
+        a.priority > b.priority ? 1 : b.priority > a.priority ? -1 : 0
+      );
 
       // Filter todo
       const todoObj = dataBlock
@@ -238,22 +187,15 @@ const main = async () => {
       for (let i of arr) {
         for (let j of i.children) {
           let payload = {};
-          if (
-            j.content.startsWith("![") &&
-            j.content.includes("](") &&
-            j.content.endsWith(")")
-          ) {
+          if (/^\!\[.*?\]\(.*?\)(\{.*?\})?/g.test(j.content)) {
             payload = {
               id: j.id,
               description: (
                 <React.Fragment>
                   <img
-                    src={`assets://${
-                      logseq.settings.pathToLogseq
-                    }/${j.content.substring(
-                      j.content.indexOf("/assets/") + 8,
-                      j.content.length - 1
-                    )}`}
+                    src={`assets://${logseq.settings.pathToLogseq}/${
+                      /\/assets\/(.*)\)/gi.exec(j.content)?.[1]
+                    }`}
                   />
                 </React.Fragment>
               ),
